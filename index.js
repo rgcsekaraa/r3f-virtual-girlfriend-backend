@@ -127,6 +127,82 @@ app.post('/upload', async (req, res) => {
   }
 });
 
+app.post('/result', async (req, res) => {
+  const { assignment, submission, questions, answers } = req.body;
+
+  if (!assignment || !submission || !answers) {
+    res.status(400).send('No content was uploaded.');
+    console.log('No content was uploaded.');
+    return;
+  }
+
+  const initialPrompt = `Preset Questions: ${assignment}\n Expected Answers: ${submission}`;
+  const studentAnswers = `Ai-generated Questions ${questions}\n Oral Answers: ${answers}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4',
+      max_tokens: 1000,
+      temperature: 0.6,
+      messages: [
+        {
+          role: 'system',
+          content: `
+          You are an expert educational assessor. Please:
+1. Analyze the provided questions and answers ${initialPrompt} and ${studentAnswers}.
+2. from the inputs, rank the student's answers based on the following criteria:
+   - Different cognitive levels (knowledge, comprehension, application, analysis, evaluation)
+   - Relevance to the provided content.
+   - A balance of theoretical and practical elements
+   - Give feedback on the student's answers
+   - Give Score out of 10 for each answer based on (knowledge, comprehension, application, analysis, evaluation) also assess the answers and give score for each category.
+          The output should be a JSON array in this format:
+          {
+            data:[
+              {"answer": "Your answer 1", "score": 10, knowledge_score: 10, comprehensive_score: 10, application_score: 10, analysis_score: 10, evaluation_score: 10}, 
+              {"answer": "Your answer 2", "score": 10, knowledge_score: 10, comprehensive_score: 10, application_score: 10, analysis_score: 10, evaluation_score: 10},
+              {"answer": "Your answer 3", "score": 10, knowledge_score: 10, comprehensive_score: 10, application_score: 10, analysis_score: 10, evaluation_score: 10},
+              {"answer": "Your answer 4", "score: 10, knowledge_score: 10, comprehensive_score: 10, application_score: 10, analysis_score: 10, evaluation_score: 10},
+              {"answer": "Your answer 5", "score: 10, knowledge_score: 10, comprehensive_score: 10, application_score: 10, analysis_score: 10, evaluation_score: 10}
+            ],
+            overallScore: "40/50",
+            overallFeedback: "Your feedback here"
+          }
+          `,
+        },
+      ],
+    });
+
+    // Log the entire response to inspect its structure
+    console.log(
+      'Raw completion response:',
+      JSON.stringify(completion, null, 2)
+    );
+
+    // Extract the content if it exists and remove code block formatting
+    let responseContent = completion?.choices?.[0]?.message?.content;
+    if (responseContent) {
+      // Remove code block formatting if present
+      responseContent = responseContent.replace(/```json|```/g, '').trim();
+
+      // Attempt to parse JSON
+      const results = JSON.parse(responseContent);
+
+      console.log('Generated Result:', results);
+      res.status(200).json(results);
+    } else {
+      console.error('No content generated in response');
+      res.status(500).send('Error generating results.');
+    }
+  } catch (error) {
+    console.error(
+      'Error in OpenAI API call:',
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).send('Error generating results.');
+  }
+});
+
 app.get('/voices', async (req, res) => {
   res.send(await voice.getVoices(elevenLabsApiKey));
 });
