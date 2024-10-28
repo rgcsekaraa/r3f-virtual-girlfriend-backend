@@ -1,29 +1,133 @@
-import { exec } from "child_process";
-import cors from "cors";
-import dotenv from "dotenv";
-import voice from "elevenlabs-node";
-import express from "express";
-import { promises as fs } from "fs";
-import OpenAI from "openai";
+import { exec } from 'child_process';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import voice from 'elevenlabs-node';
+import express from 'express';
+import { promises as fs } from 'fs';
+import OpenAI from 'openai';
+import multer from 'multer';
 dotenv.config();
 
+// Set up multer for file handling
+const upload = multer({ storage: multer.memoryStorage() });
+
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || "-", // Your OpenAI API key here, I used "-" to avoid errors when the key is not set but you should not do that
+  apiKey: process.env.OPENAI_API_KEY || '-',
 });
 
 const elevenLabsApiKey = process.env.ELEVEN_LABS_API_KEY;
-const voiceID = "kgG7dCoKCfLehAPWkJOE";
+const voiceID = 'EXAVITQu4vr4xnSDxMaL';
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 const port = 3000;
 
-app.get("/", (req, res) => {
-  res.send("Hello World!");
+const genAvatarDetails = async (userMessage, i) => {
+  const availableAnimations = ['Talking_0', 'Talking_2', 'Talking_1'];
+
+  const message = {};
+  // Generate audio file
+  const fileName = `audios/message_${i}.mp3`;
+  await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, userMessage);
+
+  // Generate lipsync
+  await lipSyncMessage(i);
+  message.audio = await audioFileToBase64(fileName);
+  message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
+  message.text = userMessage;
+  message.animation = availableAnimations[i % availableAnimations.length];
+  message.facialExpression = 'smile';
+
+  return message;
+};
+
+app.get('/', (req, res) => {
+  res.send('Hello World!');
 });
 
-app.get("/voices", async (req, res) => {
+app.post('/upload', async (req, res) => {
+  const { assignment, submission } = req.body;
+
+  if (!assignment || !submission) {
+    res.status(400).send('No content was uploaded.');
+    console.log('No content was uploaded.');
+    return;
+  }
+
+  const initialPrompt = `question: ${assignment}\n answer: ${submission}`;
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4',
+      max_tokens: 1000,
+      temperature: 0.6,
+      messages: [
+        {
+          role: 'system',
+          content: `
+          You are an expert educational assessor. Please:
+1. Analyze the provided questions and answers ${initialPrompt}.
+2. Create exactly 5 assessment questions from the inputs answers targeting:
+   - Different cognitive levels (knowledge, comprehension, application, analysis, evaluation)
+   - Relevance to the provided content, avoiding redundancy
+   - A balance of theoretical and practical elements
+          The output should be a JSON array in this format:
+          [
+            {"question": "Your question 1"},
+            {"question": "Your question 2"},
+            {"question": "Your question 3"},
+            {"question": "Your question 4"},
+            {"question": "Your question 5"}
+          ]
+          `,
+        },
+        {
+          role: 'user',
+          content: 'Hello',
+        },
+      ],
+    });
+
+    // Log the entire response to inspect its structure
+    console.log(
+      'Raw completion response:',
+      JSON.stringify(completion, null, 2)
+    );
+
+    // Extract the content if it exists and remove code block formatting
+    let responseContent = completion?.choices?.[0]?.message?.content;
+    if (responseContent) {
+      // Remove code block formatting if present
+      responseContent = responseContent.replace(/```json|```/g, '').trim();
+
+      // Attempt to parse JSON
+      const questions = JSON.parse(responseContent);
+
+      let count = 0;
+
+      for (const question of questions) {
+        console.log('Generated Question:', question.question);
+        question.message = await genAvatarDetails(question.question, count);
+        count++;
+      }
+
+      console.log('Generated Questions:', questions);
+      res.status(200).json(questions);
+    } else {
+      console.error('No content generated in response');
+      res.status(500).send('Error generating questions.');
+    }
+  } catch (error) {
+    console.error(
+      'Error in OpenAI API call:',
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).send('Error generating questions.');
+  }
+});
+
+app.get('/voices', async (req, res) => {
   res.send(await voice.getVoices(elevenLabsApiKey));
 });
 
@@ -51,104 +155,16 @@ const lipSyncMessage = async (message) => {
   console.log(`Lip sync done in ${new Date().getTime() - time}ms`);
 };
 
-app.post("/chat", async (req, res) => {
-  const userMessage = req.body.message;
-  if (!userMessage) {
-    res.send({
-      messages: [
-        {
-          text: "Hey dear... How was your day?",
-          audio: await audioFileToBase64("audios/intro_0.wav"),
-          lipsync: await readJsonTranscript("audios/intro_0.json"),
-          facialExpression: "smile",
-          animation: "Talking_1",
-        },
-        {
-          text: "I missed you so much... Please don't go for so long!",
-          audio: await audioFileToBase64("audios/intro_1.wav"),
-          lipsync: await readJsonTranscript("audios/intro_1.json"),
-          facialExpression: "sad",
-          animation: "Crying",
-        },
-      ],
-    });
-    return;
-  }
-  if (!elevenLabsApiKey || openai.apiKey === "-") {
-    res.send({
-      messages: [
-        {
-          text: "Please my dear, don't forget to add your API keys!",
-          audio: await audioFileToBase64("audios/api_0.wav"),
-          lipsync: await readJsonTranscript("audios/api_0.json"),
-          facialExpression: "angry",
-          animation: "Angry",
-        },
-        {
-          text: "You don't want to ruin Wawa Sensei with a crazy ChatGPT and ElevenLabs bill, right?",
-          audio: await audioFileToBase64("audios/api_1.wav"),
-          lipsync: await readJsonTranscript("audios/api_1.json"),
-          facialExpression: "smile",
-          animation: "Laughing",
-        },
-      ],
-    });
-    return;
-  }
-
-  const completion = await openai.chat.completions.create({
-    model: "gpt-3.5-turbo-1106",
-    max_tokens: 1000,
-    temperature: 0.6,
-    response_format: {
-      type: "json_object",
-    },
-    messages: [
-      {
-        role: "system",
-        content: `
-        You are a virtual girlfriend.
-        You will always reply with a JSON array of messages. With a maximum of 3 messages.
-        Each message has a text, facialExpression, and animation property.
-        The different facial expressions are: smile, sad, angry, surprised, funnyFace, and default.
-        The different animations are: Talking_0, Talking_1, Talking_2, Crying, Laughing, Rumba, Idle, Terrified, and Angry. 
-        `,
-      },
-      {
-        role: "user",
-        content: userMessage || "Hello",
-      },
-    ],
-  });
-  let messages = JSON.parse(completion.choices[0].message.content);
-  if (messages.messages) {
-    messages = messages.messages; // ChatGPT is not 100% reliable, sometimes it directly returns an array and sometimes a JSON object with a messages property
-  }
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i];
-    // generate audio file
-    const fileName = `audios/message_${i}.mp3`; // The name of your audio file
-    const textInput = message.text; // The text you wish to convert to speech
-    await voice.textToSpeech(elevenLabsApiKey, voiceID, fileName, textInput);
-    // generate lipsync
-    await lipSyncMessage(i);
-    message.audio = await audioFileToBase64(fileName);
-    message.lipsync = await readJsonTranscript(`audios/message_${i}.json`);
-  }
-
-  res.send({ messages });
-});
-
 const readJsonTranscript = async (file) => {
-  const data = await fs.readFile(file, "utf8");
+  const data = await fs.readFile(file, 'utf8');
   return JSON.parse(data);
 };
 
 const audioFileToBase64 = async (file) => {
   const data = await fs.readFile(file);
-  return data.toString("base64");
+  return data.toString('base64');
 };
 
 app.listen(port, () => {
-  console.log(`Virtual Girlfriend listening on port ${port}`);
+  console.log(`Mary Ai is listening on port ${port}`);
 });
